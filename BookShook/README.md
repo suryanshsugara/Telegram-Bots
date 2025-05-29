@@ -29,4 +29,7 @@ Never commit your API keys or tokens!
 
 ## License
 
-MIT License
+Creative Commons Attribution-NonCommercial 4.0 International Public License
+
+> **NOTE:** This project is for personal and educational use only.  
+> Commercial use is strictly prohibited.
