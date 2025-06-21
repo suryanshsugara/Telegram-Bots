@@ -1,0 +1,6 @@
+MacroMaster Bot is a Telegram fitness assistant that helps users:
+- Calculate personalized macro goals (calories, protein, carbs, fats)
+- Get daily workout plans
+- Generate diet plans using the Spoonacular API
+- Save profile info for precise suggestions
+- Offer paid/premium access (via UPI or PayPal)
