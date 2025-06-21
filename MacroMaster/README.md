@@ -1,4 +1,3 @@
-```markdown
 # MacroMaster Bot 💪🤖
 
 A smart Telegram bot that calculates personalized macros, gives daily workouts, and generates diet plans — all from your chat.
@@ -52,4 +51,3 @@ Now your bot is live at: [github.com/suryanshsugara/Telegram-Bots/tree/main/Macr
 
 ## 📬 Contact
 Built with ❤️ by [Suryansh Sugara](https://github.com/suryanshsugara)
-```
