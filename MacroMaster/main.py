@@ -17,4 +17,3 @@ SPOONACULAR_API_KEY = os.getenv("SPOONACULAR_API_KEY")
 PAYPAL_LINK = os.getenv("PAYPAL_LINK")
 UPI_ID = os.getenv("UPI_ID")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
-```
