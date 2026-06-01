@@ -1166,7 +1166,7 @@ def main():
             await app.bot.set_webhook(
                 url=webhook_url,
                 allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
+                drop_pending_updates=False
             )
 
         async def on_cleanup(webapp):
