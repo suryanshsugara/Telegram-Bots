@@ -17,7 +17,7 @@ from database import (
     get_searches_today, ban_user, unban_user,
     add_book_to_db, remove_book_from_db, get_book_by_id,
     search_all_genres, get_user_payments, get_user_subscription,
-    get_active_subscription_count,
+    get_active_subscription_count, record_payment,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,7 +138,21 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await admin_dashboard(update, context)
 
         elif action.startswith("pay_appr:"):
-            target_user_id = action.split(":", 2)[1]
+            import time
+            parts = action.split(":")
+            target_user_id = parts[1]
+            amount_inr = int(parts[2]) if len(parts) > 2 else 99
+            
+            # Record dynamic UPI manual payment to DB
+            record_payment(
+                user_id=target_user_id,
+                razorpay_payment_id=f"upi_{int(time.time())}",
+                razorpay_subscription_id="upi_manual",
+                amount=amount_inr * 100,
+                status="captured",
+                method="upi"
+            )
+            
             add_premium_user(target_user_id, days=30, added_by="admin", method="manual")
             try:
                 await context.bot.send_message(

@@ -30,7 +30,8 @@ from database import (
     get_premium_info, list_premium_users, log_search, log_event,
     upsert_user, is_banned,
     add_to_wishlist, remove_from_wishlist, get_wishlist, is_in_wishlist,
-    get_user_subscription, search_all_genres,
+    get_user_subscription, search_all_genres, record_pdf_download, get_pdf_download_count,
+    get_payment_count,
 )
 from admin import (
     admin_dashboard, handle_admin_callback, handle_broadcast,
@@ -99,6 +100,92 @@ async def _track_user(update: Update):
         upsert_user(str(user.id), user.username, user.first_name, user.last_name)
 
 
+def _get_user_pricing(language_code: str) -> dict:
+    """
+    Get user pricing details based on their Telegram language code.
+    Returns a dict with currency symbols, formatted strings, and local/UPI amounts.
+    """
+    lang = (language_code or "en").lower()
+    
+    # Typical Indian language codes
+    indian_langs = {"hi", "bn", "te", "mr", "ta", "ur", "gu", "kn", "ml", "pa", "as", "or", "ne", "en-in"}
+    # UK/European language codes
+    european_langs = {"en-gb", "en-uk", "es", "fr", "de", "it", "pt", "nl", "pl", "sv", "da", "fi", "no", "hu", "cs", "sk", "ro", "bg", "el", "et", "lv", "lt", "hr", "sl", "uk", "ru"}
+    
+    if any(lang.startswith(x) for x in indian_langs) or lang == "hi":
+        return {
+            "currency_symbol": "₹",
+            "currency_code": "INR",
+            "promo_price_str": "₹99",
+            "renewal_price_str": "₹149",
+            "promo_price_val": 99.0,
+            "renewal_price_val": 149.0,
+            "upi_promo_inr": 99.00,
+            "upi_renewal_inr": 149.00
+        }
+    elif any(lang.startswith(x) for x in european_langs) or lang in {"es", "fr", "de", "it", "pt", "nl", "uk"}:
+        return {
+            "currency_symbol": "£",
+            "currency_code": "GBP",
+            "promo_price_str": "£1.29",
+            "renewal_price_str": "£1.99",
+            "promo_price_val": 1.29,
+            "renewal_price_val": 1.99,
+            "upi_promo_inr": 129.00,
+            "upi_renewal_inr": 199.00
+        }
+    else:  # Default / USA
+        return {
+            "currency_symbol": "$",
+            "currency_code": "USD",
+            "promo_price_str": "$1.29",
+            "renewal_price_str": "$1.99",
+            "promo_price_val": 1.29,
+            "renewal_price_val": 1.99,
+            "upi_promo_inr": 109.00,
+            "upi_renewal_inr": 169.00
+        }
+
+
+def _check_download_limit(user_id: str) -> tuple[bool, str | None]:
+    """
+    Check if the user has reached their download limits.
+    Returns (allowed, error_message).
+    """
+    info = get_premium_info(user_id)
+    if not info:
+        return False, "🔒 You do not have an active premium subscription."
+        
+    method = info.get("method", "manual")
+    created_at = info.get("created_at")
+    
+    if method == "trial":
+        # 7-day free trial has a limit of 7 downloads
+        downloads = get_pdf_download_count(user_id, created_at)
+        if downloads >= 7:
+            return False, (
+                "⚠️ <b>Trial Download Limit Reached</b>\n\n"
+                "You have reached the limit of 7 PDF downloads allowed during your 7-day free trial.\n\n"
+                "To continue downloading unlimited books, please purchase a premium subscription! 💳"
+            )
+    elif method in ("subscription", "manual"):
+        # We check how many successful payments they have.
+        # If they have 1 payment, they are on their 1st month (promo price) -> limit is 12 downloads.
+        # If they have 0 payments, they might be manually added by admin, which is unlimited.
+        # If they have > 1 payments, they are on subsequent months -> unlimited.
+        payments = get_payment_count(user_id)
+        if payments == 1:
+            downloads = get_pdf_download_count(user_id, created_at)
+            if downloads >= 12:
+                return False, (
+                    "⚠️ <b>Promo Subscription Download Limit Reached</b>\n\n"
+                    "You have reached the limit of 12 PDF downloads for your 1st month promo subscription.\n\n"
+                    "This limit helps protect the service from abuse. Unlimited downloads will automatically unlock starting next month with your standard renewal! 📚"
+                )
+                
+    return True, None
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,7 +226,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _track_user(update)
     total_books = get_book_count()
     genres_count = len(get_genres())
-    price = SUBSCRIPTION_AMOUNT_PAISE / 100
+    
+    user = update.effective_user
+    lang = user.language_code if user else "en"
+    pricing = _get_user_pricing(lang)
 
     help_msg = (
         "🆘 <b>Book Shook Commands</b>\n\n"
@@ -150,12 +240,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 /wishlist — Your saved books\n"
     )
     if PAYMENTS_ENABLED:
-        help_msg += f"💳 /subscribe — Get premium (₹{price:.0f}/month)\n"
+        help_msg += f"💳 /subscribe — Get premium ({pricing['promo_price_str']} 1st month)\n"
         help_msg += "❌ /cancel — Cancel subscription\n"
     help_msg += (
         f"\n📊 <b>{total_books:,}</b> books • <b>{genres_count}</b> genres\n\n"
         "<b>Premium Benefits:</b>\n"
-        "🔍 Unlimited PDF searches\n"
+        "🔍 Unlimited PDF searches (anti-abuse limits apply for trial/promo)\n"
         "📋 Personal reading wishlists\n"
         "⭐ Priority support\n"
     )
@@ -166,6 +256,10 @@ async def premium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _track_user(update)
     user_id = str(update.effective_user.id)
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+
+    user = update.effective_user
+    lang = user.language_code if user else "en"
+    pricing = _get_user_pricing(lang)
 
     try:
         info = get_premium_info(user_id)
@@ -182,20 +276,19 @@ async def premium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "⏰ <b>Your premium has expired.</b>\nRenew to keep your benefits!"
             keyboard = []
             if PAYMENTS_ENABLED:
-                keyboard.append([InlineKeyboardButton("🔄 Renew — ₹99/month", callback_data="subscribe")])
+                keyboard.append([InlineKeyboardButton(f"🔄 Renew — {pricing['promo_price_str']}", callback_data="subscribe")])
         else:
-            price = SUBSCRIPTION_AMOUNT_PAISE / 100
             text = (
                 f"🔒 <b>You're not premium yet.</b>\n\n"
                 f"<b>Premium Benefits:</b>\n"
-                f"🔍 Unlimited PDF searches\n"
+                f"🔍 Unlimited PDF searches (anti-abuse limits apply for trial/promo)\n"
                 f"📋 Personal wishlists\n"
                 f"⭐ Priority support\n\n"
-                f"💰 Only <b>₹{price:.0f}/month</b> — auto-renews via UPI/Card"
+                f"💰 Promo Month: <b>{pricing['promo_price_str']}</b> (renews at {pricing['renewal_price_str']}/mo)"
             )
             keyboard = []
             if PAYMENTS_ENABLED:
-                keyboard.append([InlineKeyboardButton(f"💳 Subscribe — ₹{price:.0f}/month", callback_data="subscribe")])
+                keyboard.append([InlineKeyboardButton(f"💳 Subscribe — {pricing['promo_price_str']}", callback_data="subscribe")])
             keyboard.append([InlineKeyboardButton(f"🎁 Free Trial ({FREE_TRIAL_DAYS} days)", callback_data="trial")])
 
         await update.message.reply_text(text, parse_mode="HTML",
@@ -273,6 +366,12 @@ async def getpdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Check anti-abuse download limits
+    allowed, err_msg = _check_download_limit(user_id)
+    if not allowed:
+        await update.message.reply_text(err_msg, parse_mode="HTML")
+        return
+
     if not context.args:
         await update.message.reply_text("Usage: /getpdf <code>&lt;book name&gt;</code>", parse_mode="HTML")
         return
@@ -290,6 +389,19 @@ async def getpdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     links = await _search_pdf(book_name)
     try:
         if links:
+            # Find book ID from title if exists in DB to log accurately
+            from database import get_db
+            book_id = 0
+            try:
+                with get_db() as conn:
+                    row = conn.execute("SELECT id FROM books WHERE LOWER(title) = ? LIMIT 1", (book_name.lower(),)).fetchone()
+                    if row:
+                        book_id = row["id"]
+            except Exception:
+                pass
+            
+            record_pdf_download(user_id, book_id)
+            
             link_text = "\n".join([f'  {i+1}. <a href="{l}">Link {i+1}</a>' for i, l in enumerate(links[:3])])
             await msg.edit_text(
                 f'📖 <b>{book_name}</b>\n\n📎 <b>PDF Links:</b>\n{link_text}',
@@ -511,6 +623,14 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Book not found.")
         return
 
+    # Check anti-abuse download limits
+    allowed, err_msg = _check_download_limit(user_id)
+    if not allowed:
+        keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data=f"book:{book_id}")]]
+        keyboard.insert(0, [InlineKeyboardButton("💳 Get Premium", callback_data="subscribe")])
+        await query.edit_message_text(err_msg, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
     wait = _check_rate_limit(user_id)
     if wait:
         await query.answer(f"⏳ Wait {wait}s", show_alert=True)
@@ -523,6 +643,7 @@ async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
     log_search(user_id, book["title"], search_type="pdf_button")
 
     if links:
+        record_pdf_download(user_id, book_id)
         link_text = "\n".join([f'  {i+1}. <a href="{l}">Link {i+1}</a>' for i, l in enumerate(links[:3])])
         keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data=f"book:{book_id}")]]
         await query.edit_message_text(
@@ -648,17 +769,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💡 Use /start to browse, or /help for commands.")
         return
 
+    amount_inr = context.user_data.get("payment_amount_inr", 99.0)
     photo_file = update.message.photo[-1].file_id
     caption = (
         f"💰 <b>New Payment Verification Request (Screenshot)</b>\n\n"
         f"User ID: <code>{user_id}</code>\n"
         f"Username: @{update.effective_user.username or 'None'}\n"
         f"Name: {update.effective_user.full_name}\n"
-        f"Amount: ₹149"
+        f"Expected Amount: ₹{amount_inr:.0f}"
     )
     keyboard = [
         [
-            InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}"),
+            InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}:{int(amount_inr)}"),
             InlineKeyboardButton("❌ Reject", callback_data=f"adm:pay_rej:{user_id}")
         ]
     ]
@@ -698,17 +820,18 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ Please enter the 12-digit UPI UTR/Ref number or send a screenshot image.")
             return
             
+        amount_inr = context.user_data.get("payment_amount_inr", 99.0)
         caption = (
             f"💰 <b>New Payment Verification Request (UTR Number)</b>\n\n"
             f"UTR/Ref: <code>{user_input}</code>\n"
             f"User ID: <code>{user_id}</code>\n"
             f"Username: @{update.effective_user.username or 'None'}\n"
             f"Name: {update.effective_user.full_name}\n"
-            f"Amount: ₹149"
+            f"Expected Amount: ₹{amount_inr:.0f}"
         )
         keyboard = [
             [
-                InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}"),
+                InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}:{int(amount_inr)}"),
                 InlineKeyboardButton("❌ Reject", callback_data=f"adm:pay_rej:{user_id}")
             ]
         ]
@@ -791,8 +914,17 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 async def _send_subscription_flow(user_id: int, update_source, context: ContextTypes.DEFAULT_TYPE):
     """Sends the subscription flow, trying Razorpay first and falling back to UPI."""
-    price = SUBSCRIPTION_AMOUNT_PAISE / 100
-    
+    user = None
+    if hasattr(update_source, "from_user") and update_source.from_user:
+        user = update_source.from_user
+    elif hasattr(update_source, "effective_user") and update_source.effective_user:
+        user = update_source.effective_user
+    elif hasattr(update_source, "callback_query") and update_source.callback_query and update_source.callback_query.from_user:
+        user = update_source.callback_query.from_user
+
+    lang_code = user.language_code if user else "en"
+    pricing = _get_user_pricing(lang_code)
+
     # Try Razorpay first if keys are configured
     if PAYMENTS_ENABLED:
         try:
@@ -800,13 +932,14 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
             sub = create_subscription(str(user_id))
             
             msg_text = (
-                f"💳 <b>BookShook Premium — ₹{price:.0f}/month</b>\n\n"
-                f"Auto-renews monthly via UPI/Card.\n"
-                f"Cancel anytime with /cancel\n\n"
+                f"💳 <b>BookShook Premium — {pricing['promo_price_str']} (1st Month)</b>\n\n"
+                f"Promo price: {pricing['promo_price_str']} for the 1st month (limits apply to 12 downloads).\n"
+                f"Standard Renewal: {pricing['renewal_price_str']}/month from 2nd month (unlimited downloads).\n"
+                f"Auto-renews monthly via UPI/Card. Cancel anytime with /cancel.\n\n"
                 f"👉 Tap below to pay:"
             )
             reply_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"💳 Pay ₹{price:.0f}/month", url=sub["short_url"])],
+                [InlineKeyboardButton(f"💳 Pay {pricing['promo_price_str']}", url=sub["short_url"])],
             ])
             
             if hasattr(update_source, "callback_query") and update_source.callback_query:
@@ -818,17 +951,25 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
             logger.error("Razorpay subscription creation failed, falling back to UPI: %s", e)
 
     # Fallback to UPI manual verification flow
-    from config import UPI_ID, SUBSCRIPTION_CURRENCY
+    from config import UPI_ID
     import urllib.parse
     
-    upi_link = f"upi://pay?pa={UPI_ID}&pn={urllib.parse.quote('BookShook Premium')}&am={price:.2f}&cu={SUBSCRIPTION_CURRENCY}&tn={urllib.parse.quote(f'BookShook Premium Sub - {user_id}')}"
+    amount_inr = pricing["upi_promo_inr"]
+    upi_link = f"upi://pay?pa={UPI_ID}&pn={urllib.parse.quote('BookShook Premium')}&am={amount_inr:.2f}&cu=INR&tn={urllib.parse.quote(f'BookShook Promo Sub - {user_id}')}"
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_link)}"
     
     context.user_data["awaiting_payment_screenshot"] = True
+    context.user_data["payment_amount_inr"] = amount_inr
     
     caption_text = (
-        f"💳 <b>BookShook Premium — ₹{price:.0f}/month (UPI Transfer)</b>\n\n"
-        f"Please pay ₹{price:.0f} directly to the admin's UPI ID:\n"
+        f"💳 <b>BookShook Premium Subscription</b>\n\n"
+        f"🔥 <b>Special Promo (1st Month):</b> {pricing['promo_price_str']} (₹{amount_inr:.0f} equivalent)\n"
+        f"🔄 <b>Next Months (Renewal):</b> {pricing['renewal_price_str']}/month (₹{pricing['upi_renewal_inr']:.0f} equivalent)\n\n"
+        f"🔒 <b>Anti-Abuse Download Policy:</b>\n"
+        f"• <b>1st Month (Promo):</b> Up to <b>12 PDF downloads</b>.\n"
+        f"• <b>2nd Month+ (Standard):</b> <b>Unlimited PDF downloads</b>.\n\n"
+        f"👉 <b>UPI Direct Transfer:</b>\n"
+        f"Please pay <b>₹{amount_inr:.0f}</b> directly to the admin's UPI ID:\n"
         f"👉 <code>{UPI_ID}</code>\n\n"
         f"📱 <b>On Mobile?</b> Tap the button below to pay directly using GPay, PhonePe, Paytm, or BHIM.\n\n"
         f"🖥️ <b>On Desktop?</b> Scan the QR code image using your UPI app.\n\n"

@@ -410,6 +410,21 @@ def get_user_payments(user_id: str) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+def get_payment_count(user_id: str) -> int:
+    """Get the count of successful payments for a user."""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM payments WHERE user_id = ? AND status = 'captured'",
+                (str(user_id),)
+            ).fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.warning("Failed to get payment count: %s", e)
+        return 0
+
+
+
 def get_revenue_stats(days: int = 30) -> dict:
     """Get revenue statistics."""
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
@@ -633,3 +648,29 @@ def insert_book(title: str, author: str) -> int:
 def link_book_genre(book_id: int, genre_id: int):
     with get_db() as conn:
         conn.execute("INSERT OR IGNORE INTO book_genres (book_id, genre_id) VALUES (?, ?)", (book_id, genre_id))
+
+
+def record_pdf_download(user_id: str, book_id: int):
+    """Record a successful PDF download by a user."""
+    try:
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO bot_stats (event_type, user_id, data) VALUES ('pdf_download', ?, ?)",
+                (str(user_id), json.dumps({"book_id": book_id}))
+            )
+    except Exception as e:
+        logger.warning("Failed to record PDF download: %s", e)
+
+
+def get_pdf_download_count(user_id: str, since_date_iso: str) -> int:
+    """Get the number of PDF downloads by a user since a specific ISO date."""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM bot_stats WHERE event_type = 'pdf_download' AND user_id = ? AND created_at >= ?",
+                (str(user_id), since_date_iso)
+            ).fetchone()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.warning("Failed to get PDF download count: %s", e)
+        return 0
