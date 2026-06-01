@@ -146,7 +146,7 @@ def main():
     
     if existing_service:
         service_id = existing_service["id"]
-        service_url = existing_service.get("url", "")
+        service_url = existing_service.get("serviceDetails", {}).get("url", "")
         print(f"⚠️ Found existing service 'bookshook-bot' (ID: {service_id})")
         choice = input("Do you want to update the existing service configuration and redeploy? (y/n): ").strip().lower()
         if choice == 'y':
@@ -171,7 +171,7 @@ def main():
             sys.exit(1)
         
         service_id = res_service["service"]["id"]
-        service_url = res_service["service"].get("url", "")
+        service_url = res_service["service"].get("serviceDetails", {}).get("url", "")
         print(f"✅ Web Service created successfully! Service ID: {service_id}")
         
     # 4. Set WEBHOOK_URL
