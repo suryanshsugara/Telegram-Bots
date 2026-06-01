@@ -41,6 +41,11 @@ def make_request(url, method="GET", headers=None, data=None):
         return 0, str(e)
 
 def main():
+    import sys
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
     print("🚀 BookShook Bot — Render Deployment Automator")
     print("==============================================")
     
