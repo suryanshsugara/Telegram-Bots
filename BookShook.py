@@ -799,6 +799,13 @@ async def _health_handler(request):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
+    import asyncio
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     init_db()
     add_premium_user(str(ADMIN_USER_ID), days=36500, added_by="system", method="manual")
 
