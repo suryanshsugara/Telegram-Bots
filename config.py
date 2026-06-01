@@ -61,3 +61,4 @@ SUBSCRIPTION_NAME = "BookShook Premium"
 SUBSCRIPTION_DESCRIPTION = "Monthly premium access — unlimited PDFs, wishlists, summaries & more"
 FREE_TRIAL_DAYS = int(_optional_env("FREE_TRIAL_DAYS", "7"))
 PREMIUM_DURATION_DAYS = 30
+UPI_ID = _optional_env("UPI_ID", "suryanshsugara@okaxis")

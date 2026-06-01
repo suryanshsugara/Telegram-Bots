@@ -207,11 +207,8 @@ async def premium_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _track_user(update)
-    if not PAYMENTS_ENABLED:
-        await update.message.reply_text("⚠️ Payments are not configured yet.")
-        return
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-    await _create_subscription(update.effective_user.id, update.message)
+    await _send_subscription_flow(update.effective_user.id, update.message, context)
 
 
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -595,36 +592,11 @@ async def handle_wishlist_view(update: Update, context: ContextTypes.DEFAULT_TYP
 # ── Payment Callbacks ────────────────────────────────────────────────────────
 
 async def handle_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle subscribe button click — create Razorpay subscription."""
+    """Handle subscribe button click — create Razorpay or UPI subscription."""
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
-
-    if not PAYMENTS_ENABLED:
-        await query.edit_message_text("⚠️ Payments coming soon! Contact admin for premium.")
-        return
-
     await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-
-    try:
-        from payments import create_subscription
-        sub = create_subscription(user_id)
-        price = SUBSCRIPTION_AMOUNT_PAISE / 100
-
-        await query.edit_message_text(
-            f"💳 <b>Subscribe to BookShook Premium</b>\n\n"
-            f"💰 ₹{price:.0f}/month — auto-renews via UPI/Card\n"
-            f"✅ Cancel anytime with /cancel\n\n"
-            f"👉 <b>Tap below to pay:</b>",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"💳 Pay ₹{price:.0f}/month", url=sub["short_url"])],
-                [InlineKeyboardButton("⬅️ Back", callback_data="start_back")],
-            ]),
-        )
-    except Exception as e:
-        logger.error("Subscribe error: %s", e)
-        await query.edit_message_text("⚠️ Could not create subscription. Contact admin.")
+    await _send_subscription_flow(query.from_user.id, update, context)
 
 
 async def handle_trial(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -664,7 +636,48 @@ async def handle_noop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer()
 
 
-# ── Text Input Handler ────────────────────────────────────────────────────────
+# ── Photo and Text Input Handlers ─────────────────────────────────────────────
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _track_user(update)
+    user_id = str(update.effective_user.id)
+    if is_banned(user_id):
+        return
+
+    if not context.user_data.get("awaiting_payment_screenshot"):
+        await update.message.reply_text("💡 Use /start to browse, or /help for commands.")
+        return
+
+    photo_file = update.message.photo[-1].file_id
+    caption = (
+        f"💰 <b>New Payment Verification Request (Screenshot)</b>\n\n"
+        f"User ID: <code>{user_id}</code>\n"
+        f"Username: @{update.effective_user.username or 'None'}\n"
+        f"Name: {update.effective_user.full_name}\n"
+        f"Amount: ₹149"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"adm:pay_rej:{user_id}")
+        ]
+    ]
+    
+    await context.bot.send_photo(
+        chat_id=ADMIN_USER_ID,
+        photo=photo_file,
+        caption=caption,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    
+    await update.message.reply_text(
+        "✅ <b>Verification Request Sent!</b>\n\n"
+        "Thank you! The admin is verifying your transaction. You will be notified automatically as soon as it is approved! 📚",
+        parse_mode="HTML"
+    )
+    context.user_data["awaiting_payment_screenshot"] = False
+
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _track_user(update)
@@ -676,6 +689,43 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Admin broadcast
     if context.user_data.get("awaiting_broadcast") and is_admin(update.effective_user.id):
         await handle_broadcast(update, context)
+        return
+
+    # Payment UTR input fallback
+    if context.user_data.get("awaiting_payment_screenshot"):
+        user_input = update.message.text.strip()
+        if not user_input:
+            await update.message.reply_text("⚠️ Please enter the 12-digit UPI UTR/Ref number or send a screenshot image.")
+            return
+            
+        caption = (
+            f"💰 <b>New Payment Verification Request (UTR Number)</b>\n\n"
+            f"UTR/Ref: <code>{user_input}</code>\n"
+            f"User ID: <code>{user_id}</code>\n"
+            f"Username: @{update.effective_user.username or 'None'}\n"
+            f"Name: {update.effective_user.full_name}\n"
+            f"Amount: ₹149"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Approve", callback_data=f"adm:pay_appr:{user_id}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"adm:pay_rej:{user_id}")
+            ]
+        ]
+        
+        await context.bot.send_message(
+            chat_id=ADMIN_USER_ID,
+            text=caption,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        
+        await update.message.reply_text(
+            "✅ <b>Verification Request Sent!</b>\n\n"
+            "Thank you! The admin is verifying your transaction. You will be notified automatically as soon as it is approved! 📚",
+            parse_mode="HTML"
+        )
+        context.user_data["awaiting_payment_screenshot"] = False
         return
 
     # Search input
@@ -739,29 +789,77 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Subscription Helper ──────────────────────────────────────────────────────
 
-async def _create_subscription(user_id: int, message):
-    """Create subscription and send payment link."""
-    if not PAYMENTS_ENABLED:
-        await message.reply_text("⚠️ Payments not configured yet.")
-        return
-
-    try:
-        from payments import create_subscription
-        sub = create_subscription(str(user_id))
-        price = SUBSCRIPTION_AMOUNT_PAISE / 100
-        await message.reply_text(
-            f"💳 <b>BookShook Premium — ₹{price:.0f}/month</b>\n\n"
-            f"Auto-renews monthly via UPI/Card.\n"
-            f"Cancel anytime with /cancel\n\n"
-            f"👉 Tap below to pay:",
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([
+async def _send_subscription_flow(user_id: int, update_source, context: ContextTypes.DEFAULT_TYPE):
+    """Sends the subscription flow, trying Razorpay first and falling back to UPI."""
+    price = SUBSCRIPTION_AMOUNT_PAISE / 100
+    
+    # Try Razorpay first if keys are configured
+    if PAYMENTS_ENABLED:
+        try:
+            from payments import create_subscription
+            sub = create_subscription(str(user_id))
+            
+            msg_text = (
+                f"💳 <b>BookShook Premium — ₹{price:.0f}/month</b>\n\n"
+                f"Auto-renews monthly via UPI/Card.\n"
+                f"Cancel anytime with /cancel\n\n"
+                f"👉 Tap below to pay:"
+            )
+            reply_markup = InlineKeyboardMarkup([
                 [InlineKeyboardButton(f"💳 Pay ₹{price:.0f}/month", url=sub["short_url"])],
-            ]),
+            ])
+            
+            if hasattr(update_source, "callback_query") and update_source.callback_query:
+                await update_source.callback_query.edit_message_text(msg_text, parse_mode="HTML", reply_markup=reply_markup)
+            else:
+                await update_source.reply_text(msg_text, parse_mode="HTML", reply_markup=reply_markup)
+            return
+        except Exception as e:
+            logger.error("Razorpay subscription creation failed, falling back to UPI: %s", e)
+
+    # Fallback to UPI manual verification flow
+    from config import UPI_ID, SUBSCRIPTION_CURRENCY
+    import urllib.parse
+    
+    upi_link = f"upi://pay?pa={UPI_ID}&pn={urllib.parse.quote('BookShook Premium')}&am={price:.2f}&cu={SUBSCRIPTION_CURRENCY}&tn={urllib.parse.quote(f'BookShook Premium Sub - {user_id}')}"
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=300x300&data={urllib.parse.quote(upi_link)}"
+    
+    context.user_data["awaiting_payment_screenshot"] = True
+    
+    caption_text = (
+        f"💳 <b>BookShook Premium — ₹{price:.0f}/month (UPI Transfer)</b>\n\n"
+        f"Please pay ₹{price:.0f} directly to the admin's UPI ID:\n"
+        f"👉 <code>{UPI_ID}</code>\n\n"
+        f"📱 <b>On Mobile?</b> Tap the button below to pay directly using GPay, PhonePe, Paytm, or BHIM.\n\n"
+        f"🖥️ <b>On Desktop?</b> Scan the QR code image using your UPI app.\n\n"
+        f"📸 <b>Important</b>: After making the payment, **send the screenshot of the payment receipt** (or type the 12-digit UPI UTR/Reference number) here in this chat to activate your premium access."
+    )
+    
+    reply_markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 Pay via UPI App", url=upi_link)],
+        [InlineKeyboardButton("⬅️ Back", callback_data="start_back")]
+    ])
+    
+    if hasattr(update_source, "callback_query") and update_source.callback_query:
+        query = update_source.callback_query
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await context.bot.send_photo(
+            chat_id=int(user_id),
+            photo=qr_url,
+            caption=caption_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
         )
-    except Exception as e:
-        logger.error("Create subscription error: %s", e)
-        await message.reply_text("⚠️ Payment setup failed. Contact admin.")
+    else:
+        await update_source.reply_photo(
+            photo=qr_url,
+            caption=caption_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
 
 
 # ── Webhook Server ────────────────────────────────────────────────────────────
@@ -846,7 +944,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_wishlist_remove, pattern=r"^wlrm:"))
     app.add_handler(CallbackQueryHandler(handle_wishlist_view, pattern=r"^wishlist:"))
 
-    # Text handler
+    # Media and Text handlers
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
 
     # Error handler

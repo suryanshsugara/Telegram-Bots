@@ -137,6 +137,55 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         elif action == "back":
             await admin_dashboard(update, context)
 
+        elif action.startswith("pay_appr:"):
+            target_user_id = action.split(":", 2)[1]
+            add_premium_user(target_user_id, days=30, added_by="admin", method="manual")
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_user_id),
+                    text="🎉 <b>Payment Verified!</b>\n\nYour payment has been successfully approved. 👑 <b>BookShook Premium</b> has been activated for 30 days! Enjoy reading! 📚",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error("Failed to notify user of payment approval: %s", e)
+            
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=query.message.caption + "\n\n✅ <b>Approved!</b> User has been granted Premium.",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+            else:
+                await query.edit_message_text(
+                    text=query.message.text + "\n\n✅ <b>Approved!</b> User has been granted Premium.",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+
+        elif action.startswith("pay_rej:"):
+            target_user_id = action.split(":", 2)[1]
+            try:
+                await context.bot.send_message(
+                    chat_id=int(target_user_id),
+                    text="❌ <b>Payment Verification Failed</b>\n\nThe admin could not verify your payment transaction. Please contact support if you believe this is an error.",
+                    parse_mode="HTML"
+                )
+            except Exception as e:
+                logger.error("Failed to notify user of payment rejection: %s", e)
+            
+            if query.message.photo:
+                await query.edit_message_caption(
+                    caption=query.message.caption + "\n\n❌ <b>Rejected!</b> User has been notified.",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+            else:
+                await query.edit_message_text(
+                    text=query.message.text + "\n\n❌ <b>Rejected!</b> User has been notified.",
+                    parse_mode="HTML",
+                    reply_markup=None
+                )
+
         else:
             await query.answer("Unknown action", show_alert=True)
 
