@@ -14,9 +14,11 @@ services:
         sync: false
       - key: ADMIN_USER_ID
         sync: false
-      - key: STRIPE_API_KEY
+      - key: DODO_PAYMENTS_API_KEY
         sync: false
-      - key: STRIPE_WEBHOOK_SECRET
+      - key: DODO_WEBHOOK_SECRET
+        sync: false
+      - key: DODO_PRODUCT_ID
         sync: false
       - key: BOT_MODE
         value: webhook

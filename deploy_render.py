@@ -96,8 +96,9 @@ def main():
         {"key": "GOOGLE_API_KEY", "value": env.get("GOOGLE_API_KEY", "")},
         {"key": "GOOGLE_CSE_ID", "value": env.get("GOOGLE_CSE_ID", "")},
         {"key": "ADMIN_USER_ID", "value": env.get("ADMIN_USER_ID", "")},
-        {"key": "STRIPE_API_KEY", "value": env.get("STRIPE_API_KEY", "")},
-        {"key": "STRIPE_WEBHOOK_SECRET", "value": env.get("STRIPE_WEBHOOK_SECRET", "")},
+        {"key": "DODO_PAYMENTS_API_KEY", "value": env.get("DODO_PAYMENTS_API_KEY", "")},
+        {"key": "DODO_WEBHOOK_SECRET", "value": env.get("DODO_WEBHOOK_SECRET", "")},
+        {"key": "DODO_PRODUCT_ID", "value": env.get("DODO_PRODUCT_ID", "")},
         {"key": "BOT_MODE", "value": "webhook"},
         {"key": "PORT", "value": "10000"},
         {"key": "WEBHOOK_URL", "value": "AUTO_ASSIGNED"}  # We'll update this once created
@@ -200,17 +201,17 @@ def main():
             else:
                 print(f"⚠️ Failed to set Telegram webhook: {res_tg}")
                 
-        # 6. Stripe Webhook Configuration Details
+        # 6. Dodo Payments Webhook Configuration Details
         print("\n==============================================")
         print("🎉 Render deployment configured successfully!")
         print("==============================================")
-        print("👉 Final Step: Configure Stripe Webhook")
-        print("1. Go to your Stripe Dashboard -> Developers -> Webhooks")
+        print("👉 Final Step: Configure Dodo Payments Webhook")
+        print("1. Go to your Dodo Payments Dashboard -> Developers -> Webhooks")
         print("2. Add new Webhook:")
-        print(f"   - Webhook URL: {service_url}/stripe/webhook")
-        print(f"   - Secret: Get signing secret and set it as STRIPE_WEBHOOK_SECRET")
+        print(f"   - Webhook URL: {service_url}/dodo/webhook")
+        print(f"   - Secret: Copy signing secret and set it as DODO_WEBHOOK_SECRET")
         print("   - Active Events:")
-        print("     * checkout.session.completed")
+        print("     * payment.succeeded")
         print("==============================================")
 
 if __name__ == "__main__":

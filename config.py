@@ -34,10 +34,11 @@ GOOGLE_API_KEY = _require_env("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = _require_env("GOOGLE_CSE_ID")
 ADMIN_USER_ID = int(_require_env("ADMIN_USER_ID"))
 
-# ── Stripe (optional — payment features disabled if not set) ──────────────────
-STRIPE_API_KEY = _optional_env("STRIPE_API_KEY")
-STRIPE_WEBHOOK_SECRET = _optional_env("STRIPE_WEBHOOK_SECRET")
-PAYMENTS_ENABLED = bool(STRIPE_API_KEY)
+# ── Dodo Payments (optional — payment features disabled if not set) ───────────
+DODO_PAYMENTS_API_KEY = _optional_env("DODO_PAYMENTS_API_KEY")
+DODO_WEBHOOK_SECRET = _optional_env("DODO_WEBHOOK_SECRET")
+DODO_PRODUCT_ID = _optional_env("DODO_PRODUCT_ID")
+PAYMENTS_ENABLED = bool(DODO_PAYMENTS_API_KEY and DODO_PRODUCT_ID)
 
 
 # ── Bot Mode & Webhook ───────────────────────────────────────────────────────

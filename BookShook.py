@@ -1024,20 +1024,24 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
 
 # ── Webhook Server ────────────────────────────────────────────────────────────
 
-async def _stripe_webhook_handler(request):
-    """aiohttp handler for Stripe webhooks."""
+async def _dodo_webhook_handler(request):
+    """aiohttp handler for Dodo Payments webhooks."""
     try:
         raw_body = await request.text()
-        signature = request.headers.get("Stripe-Signature", "")
+        
+        # Extract headers for webhook signature validation
+        webhook_id = request.headers.get("webhook-id", "")
+        signature = request.headers.get("webhook-signature", "")
+        webhook_timestamp = request.headers.get("webhook-timestamp", "")
 
         from payments import verify_webhook_signature, handle_webhook_event
-        if not verify_webhook_signature(raw_body, signature):
-            logger.warning("Invalid Stripe webhook signature")
+        if not verify_webhook_signature(raw_body, signature, webhook_id, webhook_timestamp):
+            logger.warning("Invalid Dodo Payments webhook signature")
             return web.json_response({"status": "invalid_signature"}, status=400)
 
         event_data = json.loads(raw_body)
         result = await handle_webhook_event(event_data)
-        logger.info("Stripe webhook processed: %s", result)
+        logger.info("Dodo Payments webhook processed: %s", result)
         
         # If premium was successfully granted, notify the user via Telegram
         action = result.get("action", "")
@@ -1047,15 +1051,15 @@ async def _stripe_webhook_handler(request):
                 try:
                     await bot_app.bot.send_message(
                         chat_id=int(user_id),
-                        text="🎉 <b>Stripe Checkout Successful!</b>\n\nYour payment was processed. 👑 <b>BookShook Premium</b> has been activated for 30 days! Enjoy browsing and downloading books! 📚",
+                        text="🎉 <b>Checkout Successful!</b>\n\nYour payment was processed. 👑 <b>BookShook Premium</b> has been activated for 30 days! Enjoy browsing and downloading books! 📚",
                         parse_mode="HTML"
                     )
                 except Exception as notify_err:
-                    logger.error("Failed to notify user %s of Stripe payment: %s", user_id, notify_err)
+                    logger.error("Failed to notify user %s of Dodo payment: %s", user_id, notify_err)
                     
         return web.json_response({"status": "ok", **result})
     except Exception as e:
-        logger.error("Stripe webhook handler error: %s", e)
+        logger.error("Dodo Payments webhook handler error: %s", e)
         return web.json_response({"status": "error"}, status=500)
 
 
@@ -1148,7 +1152,7 @@ def main():
 
         # Add the routing table
         web_app.router.add_post(f"/webhook/{{token}}", telegram_webhook_handler)
-        web_app.router.add_post("/stripe/webhook", _stripe_webhook_handler)
+        web_app.router.add_post("/dodo/webhook", _dodo_webhook_handler)
         web_app.router.add_get("/ping", _health_handler)
 
         # Lifespan handlers for initializing/starting/stopping the PTB application
