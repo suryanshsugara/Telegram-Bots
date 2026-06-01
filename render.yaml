@@ -14,13 +14,9 @@ services:
         sync: false
       - key: ADMIN_USER_ID
         sync: false
-      - key: RAZORPAY_KEY_ID
+      - key: STRIPE_API_KEY
         sync: false
-      - key: RAZORPAY_KEY_SECRET
-        sync: false
-      - key: RAZORPAY_WEBHOOK_SECRET
-        sync: false
-      - key: RAZORPAY_PLAN_ID
+      - key: STRIPE_WEBHOOK_SECRET
         sync: false
       - key: BOT_MODE
         value: webhook

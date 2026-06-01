@@ -96,10 +96,8 @@ def main():
         {"key": "GOOGLE_API_KEY", "value": env.get("GOOGLE_API_KEY", "")},
         {"key": "GOOGLE_CSE_ID", "value": env.get("GOOGLE_CSE_ID", "")},
         {"key": "ADMIN_USER_ID", "value": env.get("ADMIN_USER_ID", "")},
-        {"key": "RAZORPAY_KEY_ID", "value": env.get("RAZORPAY_KEY_ID", "")},
-        {"key": "RAZORPAY_KEY_SECRET", "value": env.get("RAZORPAY_KEY_SECRET", "")},
-        {"key": "RAZORPAY_WEBHOOK_SECRET", "value": env.get("RAZORPAY_WEBHOOK_SECRET", "")},
-        {"key": "RAZORPAY_PLAN_ID", "value": env.get("RAZORPAY_PLAN_ID", "")},
+        {"key": "STRIPE_API_KEY", "value": env.get("STRIPE_API_KEY", "")},
+        {"key": "STRIPE_WEBHOOK_SECRET", "value": env.get("STRIPE_WEBHOOK_SECRET", "")},
         {"key": "BOT_MODE", "value": "webhook"},
         {"key": "PORT", "value": "10000"},
         {"key": "WEBHOOK_URL", "value": "AUTO_ASSIGNED"}  # We'll update this once created
@@ -202,22 +200,17 @@ def main():
             else:
                 print(f"⚠️ Failed to set Telegram webhook: {res_tg}")
                 
-        # 6. Razorpay Webhook Configuration Details
+        # 6. Stripe Webhook Configuration Details
         print("\n==============================================")
         print("🎉 Render deployment configured successfully!")
         print("==============================================")
-        print("👉 Final Step: Configure Razorpay Webhook")
-        print("1. Go to your Razorpay Dashboard -> Settings -> Webhooks")
+        print("👉 Final Step: Configure Stripe Webhook")
+        print("1. Go to your Stripe Dashboard -> Developers -> Webhooks")
         print("2. Add new Webhook:")
-        print(f"   - Webhook URL: {service_url}/razorpay/webhook")
-        print(f"   - Secret: {env.get('RAZORPAY_WEBHOOK_SECRET', 'your_webhook_secret')}")
+        print(f"   - Webhook URL: {service_url}/stripe/webhook")
+        print(f"   - Secret: Get signing secret and set it as STRIPE_WEBHOOK_SECRET")
         print("   - Active Events:")
-        print("     * subscription.authenticated")
-        print("     * subscription.activated")
-        print("     * subscription.charged")
-        print("     * subscription.cancelled")
-        print("     * payment.captured")
-        print("     * payment.failed")
+        print("     * checkout.session.completed")
         print("==============================================")
 
 if __name__ == "__main__":

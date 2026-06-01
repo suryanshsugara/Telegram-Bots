@@ -1,6 +1,6 @@
 """
 BookShook Bot — A premium Telegram bot for book discovery, PDF search, and reading lists.
-Features: Razorpay subscriptions, admin panel, wishlists, typing indicators, pagination.
+Features: Stripe card payments, dynamic UPI fallback, admin dashboard, anti-abuse download limits.
 """
 
 import logging
@@ -40,6 +40,10 @@ from admin import (
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+
+# Global bot application reference for webhook handlers
+bot_app = None
+
 
 # ── Rate Limiting ─────────────────────────────────────────────────────────────
 _last_pdf_search: dict[str, float] = {}
@@ -127,23 +131,23 @@ def _get_user_pricing(language_code: str) -> dict:
         return {
             "currency_symbol": "£",
             "currency_code": "GBP",
-            "promo_price_str": "£1.29",
-            "renewal_price_str": "£1.99",
-            "promo_price_val": 1.29,
-            "renewal_price_val": 1.99,
-            "upi_promo_inr": 129.00,
-            "upi_renewal_inr": 199.00
+            "promo_price_str": "£4.99",
+            "renewal_price_str": "£9.99",
+            "promo_price_val": 4.99,
+            "renewal_price_val": 9.99,
+            "upi_promo_inr": 529.00,
+            "upi_renewal_inr": 1049.00
         }
     else:  # Default / USA
         return {
             "currency_symbol": "$",
             "currency_code": "USD",
-            "promo_price_str": "$1.29",
-            "renewal_price_str": "$1.99",
-            "promo_price_val": 1.29,
-            "renewal_price_val": 1.99,
-            "upi_promo_inr": 109.00,
-            "upi_renewal_inr": 169.00
+            "promo_price_str": "$4.99",
+            "renewal_price_str": "$9.99",
+            "promo_price_val": 4.99,
+            "renewal_price_val": 9.99,
+            "upi_promo_inr": 419.00,
+            "upi_renewal_inr": 839.00
         }
 
 
@@ -307,26 +311,39 @@ async def subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await _track_user(update)
     user_id = str(update.effective_user.id)
-    sub = get_user_subscription(user_id)
-
-    if not sub or sub.get("status") not in ("authenticated", "active"):
-        await update.message.reply_text("⚠️ You don't have an active subscription.")
+    
+    if not is_premium(user_id):
+        await update.message.reply_text("⚠️ You do not have an active premium subscription.")
         return
 
-    try:
-        from payments import cancel_subscription
-        success = cancel_subscription(sub["razorpay_subscription_id"])
-        if success:
-            await update.message.reply_text(
-                "✅ <b>Subscription cancelled.</b>\n\n"
-                "Your premium access remains active until the current period expires.",
-                parse_mode="HTML",
-            )
-        else:
-            await update.message.reply_text("⚠️ Could not cancel. Contact admin.")
-    except Exception as e:
-        logger.error("Cancel error: %s", e)
-        await update.message.reply_text("⚠️ Error cancelling subscription.")
+    info = get_premium_info(user_id)
+    if info and info.get("method") == "trial":
+        await update.message.reply_text("🎁 You are on a free trial. It will automatically expire and you will not be charged.")
+        return
+
+    sub = get_user_subscription(user_id)
+    if sub and sub.get("razorpay_subscription_id") and sub.get("razorpay_subscription_id") != "stripe_auto":
+        try:
+            from payments import cancel_subscription
+            success = cancel_subscription(sub["razorpay_subscription_id"])
+            if success:
+                await update.message.reply_text(
+                    "✅ <b>Subscription cancelled.</b>\n\n"
+                    "Your premium access remains active until the current period expires.",
+                    parse_mode="HTML",
+                )
+            else:
+                await update.message.reply_text("⚠️ Could not cancel legacy subscription. Contact admin.")
+        except Exception as e:
+            logger.error("Cancel error: %s", e)
+            await update.message.reply_text("⚠️ Error cancelling subscription.")
+    else:
+        await update.message.reply_text(
+            "ℹ️ <b>BookShook Premium Access</b>\n\n"
+            "Your premium access was purchased as a one-time payment (or UPI transfer).\n"
+            "It will automatically expire at the end of the 30-day period. There are no recurring charges! 💳",
+            parse_mode="HTML"
+        )
 
 
 async def wishlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -925,21 +942,23 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
     lang_code = user.language_code if user else "en"
     pricing = _get_user_pricing(lang_code)
 
-    # Try Razorpay first if keys are configured
+    # Try Stripe Checkout first if keys are configured
     if PAYMENTS_ENABLED:
         try:
-            from payments import create_subscription
-            sub = create_subscription(str(user_id))
+            from payments import create_checkout_session
+            amount_cents = int(pricing["promo_price_val"] * 100)
+            currency = pricing["currency_code"]
+            amount_inr_cents = int(pricing["upi_promo_inr"] * 100)
+            session = create_checkout_session(str(user_id), amount_cents, currency, amount_inr_cents=amount_inr_cents)
             
             msg_text = (
                 f"💳 <b>BookShook Premium — {pricing['promo_price_str']} (1st Month)</b>\n\n"
-                f"Promo price: {pricing['promo_price_str']} for the 1st month (limits apply to 12 downloads).\n"
-                f"Standard Renewal: {pricing['renewal_price_str']}/month from 2nd month (unlimited downloads).\n"
-                f"Auto-renews monthly via UPI/Card. Cancel anytime with /cancel.\n\n"
-                f"👉 Tap below to pay:"
+                f"🔥 Special Promo: {pricing['promo_price_str']} for the first month (limited to 12 downloads).\n"
+                f"🔄 Standard Renewal: {pricing['renewal_price_str']}/month from the 2nd month (unlimited downloads).\n\n"
+                f"👉 Tap the button below to pay securely via Credit/Debit Card, Apple Pay, or Google Pay:"
             )
             reply_markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"💳 Pay {pricing['promo_price_str']}", url=sub["short_url"])],
+                [InlineKeyboardButton(f"💳 Pay securely via Card", url=session["url"])],
             ])
             
             if hasattr(update_source, "callback_query") and update_source.callback_query:
@@ -948,7 +967,7 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
                 await update_source.reply_text(msg_text, parse_mode="HTML", reply_markup=reply_markup)
             return
         except Exception as e:
-            logger.error("Razorpay subscription creation failed, falling back to UPI: %s", e)
+            logger.error("Stripe checkout creation failed, falling back to UPI: %s", e)
 
     # Fallback to UPI manual verification flow
     from config import UPI_ID
@@ -1005,23 +1024,38 @@ async def _send_subscription_flow(user_id: int, update_source, context: ContextT
 
 # ── Webhook Server ────────────────────────────────────────────────────────────
 
-async def _razorpay_webhook_handler(request):
-    """aiohttp handler for Razorpay webhooks."""
+async def _stripe_webhook_handler(request):
+    """aiohttp handler for Stripe webhooks."""
     try:
         raw_body = await request.text()
-        signature = request.headers.get("X-Razorpay-Signature", "")
+        signature = request.headers.get("Stripe-Signature", "")
 
         from payments import verify_webhook_signature, handle_webhook_event
         if not verify_webhook_signature(raw_body, signature):
-            logger.warning("Invalid Razorpay webhook signature")
+            logger.warning("Invalid Stripe webhook signature")
             return web.json_response({"status": "invalid_signature"}, status=400)
 
         event_data = json.loads(raw_body)
         result = await handle_webhook_event(event_data)
-        logger.info("Webhook processed: %s", result)
+        logger.info("Stripe webhook processed: %s", result)
+        
+        # If premium was successfully granted, notify the user via Telegram
+        action = result.get("action", "")
+        if action.startswith("premium_granted_to_"):
+            user_id = action.replace("premium_granted_to_", "")
+            if bot_app:
+                try:
+                    await bot_app.bot.send_message(
+                        chat_id=int(user_id),
+                        text="🎉 <b>Stripe Checkout Successful!</b>\n\nYour payment was processed. 👑 <b>BookShook Premium</b> has been activated for 30 days! Enjoy browsing and downloading books! 📚",
+                        parse_mode="HTML"
+                    )
+                except Exception as notify_err:
+                    logger.error("Failed to notify user %s of Stripe payment: %s", user_id, notify_err)
+                    
         return web.json_response({"status": "ok", **result})
     except Exception as e:
-        logger.error("Webhook handler error: %s", e)
+        logger.error("Stripe webhook handler error: %s", e)
         return web.json_response({"status": "error"}, status=500)
 
 
@@ -1095,18 +1129,54 @@ def main():
     logger.info("Starting BookShook in %s mode...", BOT_MODE)
 
     if BOT_MODE == "webhook" and WEBHOOK_URL:
-        webhook_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_BOT_TOKEN}"
-        logger.info("Webhook: %s", WEBHOOK_URL)
+        # Set up the custom aiohttp application to host both custom web routes and Telegram webhook
+        web_app = web.Application()
+        
+        # Feed telegram webhook updates into the PTB application
+        async def telegram_webhook_handler(request):
+            token = request.match_info.get("token")
+            if token != TELEGRAM_BOT_TOKEN:
+                return web.Response(status=403)
+            try:
+                data = await request.json()
+                update = Update.de_json(data, app.bot)
+                await app.process_update(update)
+                return web.Response(status=200)
+            except Exception as e:
+                logger.error("Error processing telegram update: %s", e)
+                return web.Response(status=500)
 
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=PORT,
-            url_path=f"/webhook/{TELEGRAM_BOT_TOKEN}",
-            webhook_url=webhook_url,
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-        )
+        # Add the routing table
+        web_app.router.add_post(f"/webhook/{{token}}", telegram_webhook_handler)
+        web_app.router.add_post("/stripe/webhook", _stripe_webhook_handler)
+        web_app.router.add_get("/ping", _health_handler)
+
+        # Lifespan handlers for initializing/starting/stopping the PTB application
+        async def on_startup(webapp):
+            global bot_app
+            bot_app = app
+            await app.initialize()
+            await app.start()
+            webhook_url = f"{WEBHOOK_URL}/webhook/{TELEGRAM_BOT_TOKEN}"
+            logger.info("Setting Telegram Webhook to: %s", webhook_url)
+            await app.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True
+            )
+
+        async def on_cleanup(webapp):
+            await app.stop()
+            await app.shutdown()
+
+        web_app.on_startup.append(on_startup)
+        web_app.on_cleanup.append(on_cleanup)
+
+        logger.info("Starting Custom Aiohttp server on port %s...", PORT)
+        web.run_app(web_app, host="0.0.0.0", port=PORT)
     else:
+        global bot_app
+        bot_app = app
         app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 

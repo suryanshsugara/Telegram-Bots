@@ -1,289 +1,147 @@
 """
-BookShook Bot — Razorpay Payment Integration
-Handles subscription creation, webhook verification, and payment event processing.
+BookShook Bot — Stripe Payment Integration
+Handles subscription Checkout Sessions, webhook signature verification, and event processing.
 """
 
-import hmac
-import hashlib
-import json
 import logging
+import json
+import time
 from datetime import datetime
 
-from config import (
-    RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, RAZORPAY_WEBHOOK_SECRET,
-    RAZORPAY_PLAN_ID, PAYMENTS_ENABLED,
-    SUBSCRIPTION_AMOUNT_PAISE, SUBSCRIPTION_NAME, SUBSCRIPTION_DESCRIPTION,
-    PREMIUM_DURATION_DAYS,
-)
+from config import STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, PAYMENTS_ENABLED
 from database import (
-    record_payment, upsert_subscription, update_subscription_status,
-    get_subscription_by_razorpay_id, add_premium_user, log_event,
+    record_payment, add_premium_user, log_event,
 )
 
 logger = logging.getLogger(__name__)
 
-# Initialize Razorpay client (lazy — only when payments are enabled)
-_client = None
+# Initialize Stripe (lazy)
+_stripe_module = None
 
-
-def _get_client():
-    """Lazy-init the Razorpay client."""
-    global _client
-    if _client is None:
+def _get_stripe():
+    """Lazy import and setup stripe client."""
+    global _stripe_module
+    if _stripe_module is None:
         if not PAYMENTS_ENABLED:
-            raise RuntimeError("Payments are not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET.")
+            raise RuntimeError("Stripe is not configured. Set STRIPE_API_KEY.")
         try:
-            import razorpay
-            _client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
-            logger.info("Razorpay client initialized")
+            import stripe
+            stripe.api_key = STRIPE_API_KEY
+            _stripe_module = stripe
+            logger.info("Stripe client initialized")
         except ImportError:
-            raise RuntimeError("razorpay package not installed. Run: pip install razorpay")
-    return _client
+            raise RuntimeError("stripe package not installed. Run: pip install stripe")
+    return _stripe_module
 
 
-# ── Plan Management ───────────────────────────────────────────────────────────
-
-def create_plan() -> dict:
+def create_checkout_session(user_id: str, amount_cents: int, currency: str, amount_inr_cents: int = None, success_url: str = "https://t.me/BookShook_bot") -> dict:
     """
-    Create a Razorpay subscription plan (run once during setup).
-    Returns the plan object with plan['id'] you need to save as RAZORPAY_PLAN_ID.
+    Create a Stripe Checkout Session for premium payment.
+    Returns session dict with 'url' and 'id'.
     """
-    client = _get_client()
-    plan = client.plan.create({
-        "period": "monthly",
-        "interval": 1,
-        "item": {
-            "name": SUBSCRIPTION_NAME,
-            "amount": SUBSCRIPTION_AMOUNT_PAISE,
-            "currency": "INR",
-            "description": SUBSCRIPTION_DESCRIPTION,
-        }
-    })
-    logger.info("Created Razorpay plan: %s", plan["id"])
-    return plan
-
-
-def get_plan_details() -> dict | None:
-    """Fetch current plan details from Razorpay."""
-    if not RAZORPAY_PLAN_ID:
-        return None
-    try:
-        client = _get_client()
-        return client.plan.fetch(RAZORPAY_PLAN_ID)
-    except Exception as e:
-        logger.error("Failed to fetch plan: %s", e)
-        return None
-
-
-# ── Subscription Management ──────────────────────────────────────────────────
-
-def create_subscription(user_id: str) -> dict:
-    """
-    Create a new subscription for a user.
-    Returns dict with 'short_url' (payment link) and 'id' (subscription ID).
-    """
-    if not PAYMENTS_ENABLED:
-        raise RuntimeError("Payments are not configured.")
-    if not RAZORPAY_PLAN_ID:
-        raise RuntimeError("RAZORPAY_PLAN_ID is not set. Create a plan first.")
-
-    client = _get_client()
-    subscription = client.subscription.create({
-        "plan_id": RAZORPAY_PLAN_ID,
-        "total_count": 12,  # Up to 12 monthly cycles (1 year)
-        "customer_notify": 1,  # Razorpay sends payment reminders
-        "notes": {
-            "user_id": str(user_id),
-            "bot": "BookShook",
-        }
-    })
-
-    # Save subscription to database
-    upsert_subscription(
-        user_id=str(user_id),
-        razorpay_subscription_id=subscription["id"],
-        plan_id=RAZORPAY_PLAN_ID,
-        status=subscription["status"],
-        short_url=subscription.get("short_url", ""),
+    stripe = _get_stripe()
+    
+    metadata = {
+        'user_id': str(user_id),
+        'amount_cents': str(amount_cents),
+        'currency': currency
+    }
+    if amount_inr_cents is not None:
+        metadata['amount_inr_cents'] = str(amount_inr_cents)
+        
+    session = stripe.checkout.Session.create(
+        payment_method_types=['card'],
+        line_items=[{
+            'price_data': {
+                'currency': currency.lower(),
+                'product_data': {
+                    'name': 'BookShook Premium Access',
+                    'description': f'30 days of BookShook Premium',
+                },
+                'unit_amount': amount_cents,
+            },
+            'quantity': 1,
+        }],
+        mode='payment',
+        success_url=success_url,
+        cancel_url=success_url,
+        metadata=metadata
     )
-
-    log_event("subscription_created", user_id, {"subscription_id": subscription["id"]})
-    logger.info("Subscription created for user %s: %s", user_id, subscription["id"])
-
+    
+    log_event("stripe_session_created", user_id, {"session_id": session.id})
+    logger.info("Stripe session created for user %s: %s", user_id, session.id)
+    
     return {
-        "id": subscription["id"],
-        "short_url": subscription.get("short_url", ""),
-        "status": subscription["status"],
+        "id": session.id,
+        "url": session.url
     }
 
 
-def cancel_subscription(razorpay_subscription_id: str) -> bool:
-    """Cancel an active subscription."""
-    try:
-        client = _get_client()
-        client.subscription.cancel(razorpay_subscription_id)
-        update_subscription_status(razorpay_subscription_id, "cancelled")
-        logger.info("Subscription cancelled: %s", razorpay_subscription_id)
-        return True
-    except Exception as e:
-        logger.error("Failed to cancel subscription %s: %s", razorpay_subscription_id, e)
-        return False
-
-
-def get_subscription_details(razorpay_subscription_id: str) -> dict | None:
-    """Fetch subscription status from Razorpay."""
-    try:
-        client = _get_client()
-        return client.subscription.fetch(razorpay_subscription_id)
-    except Exception as e:
-        logger.error("Failed to fetch subscription %s: %s", razorpay_subscription_id, e)
-        return None
-
-
-# ── Webhook Handling ──────────────────────────────────────────────────────────
-
 def verify_webhook_signature(payload_body: str, signature: str) -> bool:
     """
-    Verify Razorpay webhook signature using HMAC-SHA256.
-    IMPORTANT: Use raw request body (string), not parsed JSON.
+    Verify Stripe webhook signature using webhook secret.
     """
-    if not RAZORPAY_WEBHOOK_SECRET:
-        logger.warning("RAZORPAY_WEBHOOK_SECRET not set — skipping verification")
-        return True  # Allow in dev mode
-
-    expected = hmac.new(
-        RAZORPAY_WEBHOOK_SECRET.encode("utf-8"),
-        payload_body.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
-
-    return hmac.compare_digest(expected, signature)
+    if not STRIPE_WEBHOOK_SECRET:
+        logger.warning("STRIPE_WEBHOOK_SECRET not set — skipping verification")
+        return True  # Allow in dev/fallback
+        
+    stripe = _get_stripe()
+    try:
+        stripe.Webhook.construct_event(
+            payload_body, signature, STRIPE_WEBHOOK_SECRET
+        )
+        return True
+    except Exception as e:
+        logger.error("Stripe webhook verification failed: %s", e)
+        return False
 
 
 async def handle_webhook_event(event_data: dict) -> dict:
     """
-    Process a Razorpay webhook event.
+    Process a verified Stripe webhook event.
     Returns a dict with the action taken.
-
-    Key events:
-    - subscription.authenticated → mandate created, waiting for first charge
-    - subscription.activated → first payment successful
-    - subscription.charged → recurring payment successful
-    - subscription.completed → all cycles done
-    - subscription.cancelled → user or admin cancelled
-    - payment.captured → payment was successful
-    - payment.failed → payment failed
     """
-    event = event_data.get("event", "")
-    payload = event_data.get("payload", {})
+    event_type = event_data.get("type", "")
+    data = event_data.get("data", {})
+    obj = data.get("object", {})
 
-    logger.info("Processing webhook event: %s", event)
-
-    result = {"event": event, "action": "none"}
+    logger.info("Processing Stripe webhook event: %s", event_type)
+    result = {"event": event_type, "action": "none"}
 
     try:
-        if event in ("subscription.authenticated", "subscription.activated"):
-            sub_data = payload.get("subscription", {}).get("entity", {})
-            sub_id = sub_data.get("id")
-            notes = sub_data.get("notes", {})
-            user_id = notes.get("user_id")
-
-            if sub_id:
-                update_subscription_status(sub_id, "active")
-
+        if event_type == "checkout.session.completed":
+            metadata = obj.get("metadata", {})
+            user_id = metadata.get("user_id")
+            amount_cents = int(metadata.get("amount_cents", "0"))
+            amount_inr_cents = int(metadata.get("amount_inr_cents", str(amount_cents)))
+            currency = metadata.get("currency", "USD")
+            payment_id = obj.get("id")
+            
             if user_id:
-                add_premium_user(user_id, days=PREMIUM_DURATION_DAYS, added_by="razorpay", method="subscription")
-                log_event("subscription_activated", user_id, {"subscription_id": sub_id})
-                result["action"] = f"premium_granted_to_{user_id}"
-
-        elif event == "subscription.charged":
-            sub_data = payload.get("subscription", {}).get("entity", {})
-            payment_data = payload.get("payment", {}).get("entity", {})
-            sub_id = sub_data.get("id")
-            notes = sub_data.get("notes", {})
-            user_id = notes.get("user_id")
-            paid_count = sub_data.get("paid_count", 0)
-
-            if sub_id:
-                update_subscription_status(sub_id, "active", paid_count=paid_count)
-
-            if user_id and payment_data:
+                # Record payment in DB
                 record_payment(
                     user_id=user_id,
-                    razorpay_payment_id=payment_data.get("id", ""),
-                    razorpay_subscription_id=sub_id or "",
-                    amount=payment_data.get("amount", 0),
+                    razorpay_payment_id=payment_id,
+                    razorpay_subscription_id="stripe_auto",
+                    amount=amount_inr_cents,
                     status="captured",
-                    method=payment_data.get("method", ""),
+                    method="card"
                 )
-                # Extend premium by another month
-                add_premium_user(user_id, days=PREMIUM_DURATION_DAYS, added_by="razorpay", method="subscription")
-                log_event("payment_captured", user_id, {
-                    "amount": payment_data.get("amount", 0),
-                    "method": payment_data.get("method", ""),
+                
+                # Grant premium for 30 days
+                add_premium_user(user_id, days=30, added_by="stripe", method="subscription")
+                log_event("stripe_payment_captured", user_id, {
+                    "amount": amount_cents,
+                    "currency": currency,
+                    "payment_id": payment_id
                 })
-                result["action"] = f"payment_captured_and_premium_extended_for_{user_id}"
-
-        elif event == "subscription.cancelled":
-            sub_data = payload.get("subscription", {}).get("entity", {})
-            sub_id = sub_data.get("id")
-            notes = sub_data.get("notes", {})
-            user_id = notes.get("user_id")
-
-            if sub_id:
-                update_subscription_status(sub_id, "cancelled")
-
-            if user_id:
-                log_event("subscription_cancelled", user_id, {"subscription_id": sub_id})
-                result["action"] = f"subscription_cancelled_for_{user_id}"
-            # Note: we don't remove premium — it expires naturally
-
-        elif event == "subscription.completed":
-            sub_data = payload.get("subscription", {}).get("entity", {})
-            sub_id = sub_data.get("id")
-            if sub_id:
-                update_subscription_status(sub_id, "completed")
-            result["action"] = "subscription_completed"
-
-        elif event == "payment.captured":
-            payment_data = payload.get("payment", {}).get("entity", {})
-            notes = payment_data.get("notes", {})
-            user_id = notes.get("user_id")
-
-            if user_id and payment_data:
-                record_payment(
-                    user_id=user_id,
-                    razorpay_payment_id=payment_data.get("id", ""),
-                    razorpay_subscription_id=payment_data.get("subscription_id", ""),
-                    amount=payment_data.get("amount", 0),
-                    status="captured",
-                    method=payment_data.get("method", ""),
-                )
-                result["action"] = f"payment_recorded_for_{user_id}"
-
-        elif event == "payment.failed":
-            payment_data = payload.get("payment", {}).get("entity", {})
-            notes = payment_data.get("notes", {})
-            user_id = notes.get("user_id")
-
-            if user_id:
-                record_payment(
-                    user_id=user_id,
-                    razorpay_payment_id=payment_data.get("id", ""),
-                    razorpay_subscription_id=payment_data.get("subscription_id", ""),
-                    amount=payment_data.get("amount", 0),
-                    status="failed",
-                    method=payment_data.get("method", ""),
-                )
-                log_event("payment_failed", user_id, {"amount": payment_data.get("amount", 0)})
-                result["action"] = f"payment_failed_for_{user_id}"
-
+                result["action"] = f"premium_granted_to_{user_id}"
         else:
-            logger.info("Unhandled webhook event: %s", event)
+            logger.info("Unhandled Stripe webhook event: %s", event_type)
             result["action"] = "unhandled"
-
+            
     except Exception as e:
-        logger.error("Error processing webhook event %s: %s", event, e)
+        logger.error("Error processing Stripe webhook event %s: %s", event_type, e)
         result["action"] = f"error: {str(e)}"
-
+        
     return result

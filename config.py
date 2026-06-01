@@ -34,12 +34,11 @@ GOOGLE_API_KEY = _require_env("GOOGLE_API_KEY")
 GOOGLE_CSE_ID = _require_env("GOOGLE_CSE_ID")
 ADMIN_USER_ID = int(_require_env("ADMIN_USER_ID"))
 
-# ── Razorpay (optional — payment features disabled if not set) ────────────────
-RAZORPAY_KEY_ID = _optional_env("RAZORPAY_KEY_ID")
-RAZORPAY_KEY_SECRET = _optional_env("RAZORPAY_KEY_SECRET")
-RAZORPAY_WEBHOOK_SECRET = _optional_env("RAZORPAY_WEBHOOK_SECRET")
-RAZORPAY_PLAN_ID = _optional_env("RAZORPAY_PLAN_ID")
-PAYMENTS_ENABLED = bool(RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET)
+# ── Stripe (optional — payment features disabled if not set) ──────────────────
+STRIPE_API_KEY = _optional_env("STRIPE_API_KEY")
+STRIPE_WEBHOOK_SECRET = _optional_env("STRIPE_WEBHOOK_SECRET")
+PAYMENTS_ENABLED = bool(STRIPE_API_KEY)
+
 
 # ── Bot Mode & Webhook ───────────────────────────────────────────────────────
 BOT_MODE = _optional_env("BOT_MODE", "polling").lower()  # "polling" or "webhook"
